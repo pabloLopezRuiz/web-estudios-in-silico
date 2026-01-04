@@ -1,0 +1,49 @@
+/* Custom Styles for RNA-Seq App */
+
+body {
+  font-family: 'Roboto', sans-serif;
+  background-color: #f8f9fa;
+}
+
+.card {
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  border: none;
+  margin-bottom: 20px;
+}
+
+.card-header {
+  background-color: #fff;
+  border-bottom: 1px solid #eee;
+  font-weight: bold;
+  color: #2c3e50;
+}
+
+h4 {
+  color: #2c3e50;
+  font-weight: 600;
+}
+
+.sidebar {
+  background-color: #ffffff;
+  border-right: 1px solid #eee;
+}
+
+.shiny-input-container {
+  margin-bottom: 15px;
+}
+
+.btn-primary {
+  background-color: #78c2ad; /* Minty green */
+  border-color: #78c2ad;
+}
+
+.btn-primary:hover {
+  background-color: #63a895;
+  border-color: #63a895;
+}
+
+/* DataTables customization */
+table.dataTable thead th {
+  background-color: #f1f1f1;
+  color: #333;
+}

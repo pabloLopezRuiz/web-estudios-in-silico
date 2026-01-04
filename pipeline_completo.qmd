@@ -1,0 +1,278 @@
+---
+title: "Pipeline de Análisis Bioinformático: GSE124799"
+subtitle: "Procesamiento, DEA y Enriquecimiento Funcional"
+author: "Pablo Manuel López Ruiz"
+date: "`r Sys.Date()`"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: show
+    theme: cosmo
+    highlight-style: github
+    embed-resources: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Introducción
+
+Este documento presenta el pipeline completo de análisis para el dataset **GSE124799**. El flujo de trabajo se divide en tres etapas principales:
+
+1. **Procesamiento**: Descarga de datos de GEO, anotación de genes y creación de un objeto `SummarizedExperiment`.
+2. **Análisis de Expresión Diferencial (DEA)**: Normalización, control de calidad (PCA, Correlación) y contraste entre grupos experimentales.
+3. **Análisis de Enriquecimiento (ORA/GSEA)**: Identificación de rutas biológicas (GO/KEGG) y redes de interacción de proteínas (STRING).
+
+---
+
+# 1. Procesamiento de Datos (`processing.R`)
+
+Cargamos las librerías necesarias y descargamos los metadatos y conteos crudos desde el repositorio GEO.
+
+```{r load-libraries-proc}
+#| eval: FALSE
+library(GEOquery)
+library(biomaRt)
+library(SummarizedExperiment)
+```
+
+### Descarga de metadatos y conteos
+
+Descargamos la matriz de la serie y los archivos suplementarios que contienen los conteos de lecturas.
+
+```{r download-geo}
+#| eval: FALSE
+# coldata
+gse <- getGEO("GSE124799")
+gse <- gse$GSE124799_series_matrix.txt.gz
+coldata <- pData(gse)
+
+# expdata
+expdata <- experimentData(gse)
+
+# counts
+filename <- rownames(getGEOSuppFiles("GSE124799")[1])
+mtx <- read.csv(filename, sep = "\t")
+
+rowmtx <- mtx[, 1]
+mtx <- mtx[, -1]
+rownames(mtx) <- rowmtx
+```
+
+### Limpieza de nombres y anotación
+
+Cambiamos los nombres de las muestras y utilizamos `biomaRt` para obtener anotaciones adicionales de Ensembl (nombres de genes, posiciones cromosómicas, etc.).
+
+```{r annotation}
+#| eval: FALSE
+# Prefiero tener el GEO accession como nombre de las columnas
+colnames(mtx) <- coldata$geo_accession
+
+# Busco anotaciones adicionales para los genes
+ensembl <- useMart(biomart = "ensembl", "mmusculus_gene_ensembl")
+mygenes <- rownames(mtx)
+map_genes <- getBM(
+    attributes = c("ensembl_gene_id", "entrezgene_id", "external_gene_name", "start_position", "end_position", "chromosome_name"),
+    filters = "ensembl_gene_id",
+    values = mygenes,
+    mart = ensembl
+)
+map_genes <- map_genes[!duplicated(map_genes$ensembl_gene_id), ]
+rownames(map_genes) <- map_genes$ensembl_gene_id
+
+# Filtro aquellos genes que no tienen anotación
+mtx_fil <- mtx[rownames(map_genes), ]
+```
+
+### Creación del objeto SummarizedExperiment
+
+Unimos los conteos, metadatos y anotaciones en un único objeto `SummarizedExperiment`
+
+```{r create-se}
+#| eval: FALSE
+g <- SummarizedExperiment(
+    assays = list(counts = as.matrix(mtx_fil)),
+    colData = coldata,
+    rowData = map_genes,
+    metadata = list(experimentData = expdata)
+)
+
+colData(g)$title <- make.names(colData(g)$title)
+colData(g)$group <- sapply(strsplit(colData(g)$title, "\\."), "[", 1)
+colData(g)$group <- as.factor(colData(g)$group)
+colData(g)$group <- relevel(colData(g)$group, ref = "Sed")
+
+# Cambio algunos nombres del summarized experiment para facilitar el análisis
+colnames(colData(g)) <- make.names(colnames(colData(g)))
+colnames(colData(g))[45] <- "gender"
+colData(g)$gender <- as.factor(colData(g)$gender) 
+
+# Guardamos el objeto procesado
+if(!dir.exists("GSE124799")) dir.create("GSE124799")
+save(g, file = "GSE124799/gse.RData")
+```
+
+---
+
+# 2. Análisis de Expresión Diferencial (`DEA.R`)
+
+Cargamos las librerías estadísticas y de visualización para el análisis diferencial.
+
+```{r load-libraries-dea}
+library(DESeq2)
+library(ggplot2)
+library(tidyverse)
+library(PCAtools)
+library(heatmaply)
+library(mixOmics)
+```
+
+### Exploración Inicial
+
+Visualizamos la distribución de las muestras por género y grupo experimental, además de la densidad de los conteos.
+
+```{r eda-plots}
+load("GSE124799/gse.RData")
+
+coldata_df <- colData(g) %>%
+  as.data.frame() %>%
+  mutate(gender = factor(gender, levels = c("male", "female"))) %>%
+  mutate(group = factor(group, levels = c("Sed", "Ex", "ExSed"))) %>%
+  dplyr::select(gender, group) 
+
+# Distribución de grupos
+ggplot(coldata_df, aes(x = group, fill = group)) +
+    geom_bar(width = 0.3) +
+    theme_minimal()
+
+# Densidad de conteos
+limma::plotDensities(log2(assay(g) + 1), main = "Densidad de conteos (log2 + 1)", legend = F)
+```
+
+### Normalización y Filtrado
+
+Filtramos genes con baja expresión y ejecutamos `DESeq2`.
+
+```{r deseq2}
+# Filtro: al menos 1 CPM en 3 muestras
+keep <- rowSums(edgeR::cpm(assay(g))> 1) >= 3
+g_sel <- g[keep, ]
+g_sel$group <- relevel(g_sel$group, ref = "Sed")
+
+# Ejecución de DESeq2
+ddsSE <- DESeqDataSet(g_sel, design = ~group)
+dds <- DESeq(ddsSE)
+```
+
+### Control de Calidad: VST, Correlación y PCA
+
+Aplicamos la transformación `vst` para hacer la correlación y la pca, tanto con el paquete `PCATools` como con el paquete `MixOmics` ya que usamos los dos para distintas visualizaciones.
+
+```{r quality-control}
+# Transformación VST (blind=TRUE para QC imparcial)
+vst_dds <- vst(dds, blind = TRUE) 
+
+# Heatmap de Correlación
+cor_matrix <- cor(assay(vst_dds), method = "spearman")
+heatmaply(cor_matrix, ColSideColors = coldata_df$group, plot_method = "plotly")
+
+# PCA (PCAtools)
+pca.res <- PCAtools::pca(mat=assay(vst_dds), metadata=colData(g), scale=TRUE)
+screeplot(pca.res)
+
+# PCA (mixOmics) para visualización alternativa
+X <- mixOmics::pca(t(assay(vst_dds)), ncomp = 5)
+plotIndiv(X, group = colData(g)$group, pch = "circle", legend = TRUE)
+```
+
+### Resultados de los Contrastes
+
+Extraemos los contrastes del objeto `DeSeq2`: Sedentario vs Ejercicio (Sed vs Ex), Sedentario vs Ejercicio-Sedentario (Sed vs ExSed), y Ejercicio vs Ejercicio-Sedentario (Ex vs ExSed).
+
+```{r dea-results}
+SvE <- results(dds, contrast = c("group", "Sed", "Ex"))
+SvE <- na.omit(SvE)
+save(SvE, file = "GSE124799/DE_Sed_vs_Ex.RData")
+
+SvEs <- results(dds, contrast = c("group", "Sed", "ExSed"))
+SvEs <- na.omit(SvEs)
+save(SvEs, file = "GSE124799/DE_Sed_vs_ExSed.RData")
+
+EvEs <- results(dds, contrast = c("group", "Ex", "ExSed"))
+EvEs <- na.omit(EvEs)
+save(EvEs, file = "GSE124799/DE_Ex_vs_ExSed.RData")
+```
+
+---
+
+# 3. Análisis de Enriquecimiento Funcional (`ORA.R`)
+
+Identificamos las funciones biológicas alteradas utilizando los genes diferencialmente expresados.
+
+```{r load-libraries-ora}
+library(clusterProfiler)
+library(enrichplot)
+library(org.Mm.eg.db)
+library(STRINGdb)
+library(visNetwork)
+```
+
+### Filtrado de genes significativos
+
+Establecemos umbrales de significancia estadística (`padj < 0.05`) y magnitud de cambio (`|log2FC| > 3`).
+
+```{r filter-top-genes}
+pval = 0.05
+lfc = 3
+
+top_genes_sve <- rownames(SvE[SvE$padj < pval & SvE$log2FoldChange > lfc, ])
+bot_genes_sve <- rownames(SvE[SvE$padj < pval & SvE$log2FoldChange < -lfc, ])
+# ... (repetir para otros contrastes si es necesario)
+```
+
+### Over-Representation Analysis (ORA)
+
+Buscamos términos de Gene Ontology (Biological Process) enriquecidos en nuestros sets de genes.
+
+```{r ora-go}
+oraTop_sve <- enrichGO(gene = top_genes_sve, OrgDb = org.Mm.eg.db, keyType = 'ENSEMBL', 
+                       ont = "BP", pAdjustMethod = "BH", pvalueCutoff = 1)
+
+barplot(oraTop_sve, showCategory = 5, title = "Top GO terms (Up-regulated)")
+```
+
+### Gene Set Enrichment Analysis (GSEA)
+
+A diferencia de ORA, GSEA utiliza la lista completa de genes ordenados por su cambio de expresión.
+
+```{r gsea}
+sve_ord <- SvE %>% as.data.frame() %>% arrange(desc(log2FoldChange)) %>% 
+           dplyr::select(log2FoldChange) %>% rownames_to_column() %>% deframe()
+
+gsea_go_sve <- gseGO(geneList = sve_ord, ont = "BP", OrgDb = org.Mm.eg.db, 
+                     keyType = 'ENSEMBL', pvalueCutoff = 1)
+
+dotplot(gsea_go_sve, showCategory = 5)
+```
+
+### Redes de Interacción (STRING)
+
+Finalmente, mapeamos los genes en la base de datos STRING para visualizar posibles interacciones proteína-proteína.
+
+```{r string-network}
+string_db <- STRINGdb$new(version = "12", species = 10090, score_threshold = 400)
+
+top_sve_df <- SvE %>% as.data.frame() %>% dplyr::select("log2FoldChange", "padj") %>% 
+              rownames_to_column("gene") %>% rename(logFC=2, P.Value=3)
+
+mapped_sve <- string_db$map(top_sve_df, "gene", removeUnmappedRows = TRUE)
+
+# Visualización de los primeros 50 hits
+hits <- mapped_sve$STRING_id[1:50]
+edges <- string_db$get_interactions(hits)
+nodes <- data.frame(id = unique(c(edges$from, edges$to)), label = unique(c(edges$from, edges$to)))
+
+visNetwork(nodes, edges) %>% visOptions(highlightNearest = TRUE)
+```
