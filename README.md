@@ -18,12 +18,12 @@ Archivo de la app. Para visualizarla se debe de ejecutar este archivo.
 Fichero con archivos generados en el análisis.
 
 #### **GSE124799**
-Fichero con el SummarizedExperiment archivo (*gse.RData*), además contiene
+Fichero con el archivo SummarizedExperiment (*gse.RData*), además contiene
 los archivos generados en el contraste.
 
 #### **processing.R**
 Archivo donde se transforma de los datos crudos subidos a GEO y los metadatos
-al archivo Summarized Experiment usado en el resto del análisis.
+al archivo SummarizedExperiment usado en el resto del análisis.
 
 #### **DEA.R**
 Archivo del análisis de expresión diferencial, con algunos gráficos generados
