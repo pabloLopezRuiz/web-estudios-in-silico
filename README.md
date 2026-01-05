@@ -10,29 +10,29 @@ y por tanto la app se bloquea, por esto adjunto la app como fichero de R.
 
 # Estructura del directorio
 
-**web_esb/app.R**
+#### **web_esb/app.R**
 Archivo de la app. Para visualizarla se debe de ejecutar este archivo.
 
 
-**data**: 
+#### **data**
 Fichero con archivos generados en el análisis.
 
-**GSE124799**:
+#### **GSE124799**
 Fichero con el SummarizedExperiment archivo (*gse.RData*), además contiene
 los archivos generados en el contraste.
 
-**processing.R**:
+#### **processing.R**
 Archivo donde se transforma de los datos crudos subidos a GEO y los metadatos
 al archivo Summarized Experiment usado en el resto del análisis.
 
-**DEA.R**:
+#### **DEA.R**
 Archivo del análisis de expresión diferencial, con algunos gráficos generados
 
-**ORA.R**:
+#### **ORA.R**
 Archivo del enriquecimiento funcional, contiene un ORA, un GSEA y un análisis
 de STRING.
 
-**pipeline_completo.qmd/html**
+#### **pipeline_completo.qmd\html**
 Archivo con un documento generado con todo el análisis hecho en processing.R, 
 DEA.R y ORA.R comprimido en un único informe con los pasos detallados.
 
